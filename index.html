@@ -203,7 +203,7 @@ function toDriveDownload(url) {
 // ─── FIRESTORE FUNCTIONS ─────────────────────────────────────────────
 async function loadFromCloud() {
   try {
-    const snap = await db.collection(COLLECTION).orderBy("createdAt", "desc").get();
+    const snap = await db.collection(COLLECTION).get();
     return snap.docs.map(d => ({ id: d.id, ...d.data() }));
   } catch(e) {
     console.error("Load failed", e);
@@ -366,4 +366,253 @@ function render() {
     const empty = el("div","empty-state");
     empty.innerHTML = `<div class="empty-icon">📭</div>
       <div class="empty-title">${state.search||state.typeFilter!=="All"||state.filter!=="All"?"No materials found":"No materials yet"}</div>
-      <div class="empty-sub"
+      <div class="empty-sub">${state.search||state.typeFilter!=="All"||state.filter!=="All"?"Try a different search or filter.":"The committee hasn't uploaded anything yet. Check back soon."}</div>`;
+    main.appendChild(empty);
+  } else {
+    Object.keys(grouped).sort().forEach(course => {
+      const items = grouped[course];
+      const section = el("div","course-section");
+      const header = el("div","course-header");
+      header.innerHTML = `<span class="course-badge">${course}</span><span class="course-name">${getCourseTitle(course)}</span><span class="course-count">${items.length} file${items.length>1?"s":""}</span>`;
+      section.appendChild(header);
+      const grid = el("div","materials-grid");
+      items.forEach(m => {
+        const tc = TYPE_CONFIG[m.type] || TYPE_CONFIG["Other"];
+        const card = el("div","material-card");
+        card.innerHTML = `
+          <div class="material-card-top">
+            <div class="material-card-icon ${tc.cls}">${tc.icon}</div>
+            <div class="material-card-info">
+              <div class="material-card-title">${m.title}</div>
+              <div class="material-card-course">${m.course}</div>
+            </div>
+          </div>
+          ${m.description ? `<div style="font-size:12px;color:#6B7280;margin-bottom:10px;line-height:1.5">${m.description}</div>` : ""}
+          <div class="material-card-footer">
+            <span class="material-type-badge ${tc.badge}">${tc.label}</span>
+            <a class="material-dl-btn" href="${m.url}" target="_blank" rel="noopener">⬇ Download</a>
+          </div>
+        `;
+        grid.appendChild(card);
+      });
+      section.appendChild(grid);
+      main.appendChild(section);
+    });
+  }
+
+  app.appendChild(main);
+
+  // ADMIN MODAL
+  if (state.adminOpen) {
+    const overlay = el("div","modal-overlay");
+    overlay.onclick = e => {
+      if (e.target === overlay) {
+        state.adminOpen = false; state.authed = false; state.pwInput = ""; render();
+      }
+    };
+    const modal = el("div","modal");
+
+    const mh = el("div","modal-header");
+    mh.innerHTML = `<span class="modal-title">⚙ Admin Panel</span>`;
+    const mc = el("button","modal-close"); mc.textContent = "✕";
+    mc.onclick = () => { state.adminOpen = false; state.authed = false; state.pwInput = ""; render(); };
+    mh.appendChild(mc);
+    modal.appendChild(mh);
+
+    const mb = el("div","modal-body");
+
+    if (!state.authed) {
+      // LOCK SCREEN
+      const ls = el("div","lock-screen");
+      ls.innerHTML = `<div class="lock-icon">🔒</div><div class="lock-title">Committee Access Only</div><div class="lock-sub">Enter the admin password to manage materials.</div>`;
+      const pw = el("input","pw-input" + (state.pwError?" error":""));
+      pw.type = "password"; pw.placeholder = "Password"; pw.value = state.pwInput;
+      pw.oninput = e => { state.pwInput = e.target.value; };
+      pw.onkeydown = e => { if (e.key==="Enter") tryAuth(); };
+      if (state.pwError) {
+        const err = el("div","pw-error"); err.textContent = "Incorrect password.";
+        ls.appendChild(pw); ls.appendChild(err);
+      } else {
+        ls.appendChild(pw);
+      }
+      const ub = el("button","unlock-btn"); ub.textContent = "Unlock"; ub.onclick = tryAuth;
+      ls.appendChild(ub);
+      mb.appendChild(ls);
+
+    } else {
+      // SUCCESS / ERROR BARS
+      if (state.saved) {
+        const sb = el("div","success-bar"); sb.textContent = "✓ Material saved successfully";
+        mb.appendChild(sb);
+      }
+      if (state.saveError) {
+        const eb = el("div","error-bar"); eb.textContent = "⚠ " + state.saveError;
+        mb.appendChild(eb);
+      }
+
+      // DRIVE HINT
+      const hint = el("div","drive-hint");
+      hint.innerHTML = `<strong>📎 How to add a file:</strong>
+        1. Upload the PDF to Google Drive<br>
+        2. Right-click the file → <em>Share</em> → set to <em>"Anyone with the link"</em><br>
+        3. Copy the link and paste it below — the vault converts it to a direct download automatically.`;
+      mb.appendChild(hint);
+
+      // FORM
+      const fs = el("div","form-section");
+      const ft = el("div","form-section-title");
+      ft.textContent = state.editId ? "✏ Edit Material" : "＋ Add New Material";
+      fs.appendChild(ft);
+
+      const r1 = el("div","form-row");
+      r1.appendChild(makeField("course","Course Code","e.g. VMPA 402",state.form.course,"course"));
+      r1.appendChild(makeField("type","Material Type","",state.form.type,"type",true));
+      fs.appendChild(r1);
+
+      const r2 = el("div","form-row full");
+      r2.appendChild(makeField("title","Title","e.g. Chemotherapy Lecture Notes",state.form.title,"title"));
+      fs.appendChild(r2);
+
+      const r3 = el("div","form-row full");
+      const urlField = makeField("url","Google Drive Link","Paste the share link here",state.form.url,"url");
+      const urlHint = el("div","form-hint");
+      urlHint.textContent = "Paste the link exactly as copied from Drive — the vault handles the rest.";
+      urlField.appendChild(urlHint);
+      r3.appendChild(urlField);
+      fs.appendChild(r3);
+
+      const r4 = el("div","form-row");
+      r4.appendChild(makeField("addedBy","Added By","e.g. Academic Committee",state.form.addedBy,"addedBy"));
+      r4.appendChild(makeField("description","Short Description (optional)","e.g. Covers weeks 1 to 4",state.form.description,"description"));
+      fs.appendChild(r4);
+
+      const fa = el("div","form-actions");
+      const svb = el("button","btn-primary");
+      svb.textContent = state.saving ? "Saving..." : (state.editId ? "Update Material" : "Add Material");
+      svb.disabled = state.saving;
+      svb.onclick = handleSave;
+      fa.appendChild(svb);
+      if (state.editId) {
+        const cb = el("button","btn-cancel"); cb.textContent = "Cancel";
+        cb.onclick = () => {
+          state.editId = null;
+          state.form = { course:"", title:"", type:"Notes", url:"", addedBy:"Academic Committee", description:"" };
+          render();
+        };
+        fa.appendChild(cb);
+      }
+      fs.appendChild(fa);
+      mb.appendChild(fs);
+
+      // LIST
+      const lt = el("div","list-section-title");
+      lt.textContent = `All Materials (${state.materials.length})`;
+      mb.appendChild(lt);
+
+      [...state.materials].sort((a,b) => a.course.localeCompare(b.course)).forEach(m => {
+        const tc = TYPE_CONFIG[m.type] || TYPE_CONFIG["Other"];
+        const li = el("div","list-item");
+        const icon = el("div","list-item-icon " + tc.cls); icon.textContent = tc.icon;
+        const info = el("div","list-item-info");
+        info.innerHTML = `<div class="list-item-title">${m.course} — ${m.title}</div><div class="list-item-meta">${m.type}${m.addedBy?" · "+m.addedBy:""}</div>`;
+        const eb = el("button","btn-edit"); eb.textContent = "Edit";
+        eb.onclick = () => {
+          state.editId = m.id;
+          state.form = { course:m.course, title:m.title, type:m.type, url:m.url, addedBy:m.addedBy||"Academic Committee", description:m.description||"", createdAt:m.createdAt };
+          render();
+        };
+        const db2 = el("button","btn-delete"); db2.textContent = "Delete";
+        db2.onclick = async () => {
+          if (confirm("Delete this material?")) {
+            await deleteFromCloud(m.id);
+            state.materials = state.materials.filter(x => x.id !== m.id);
+            render();
+          }
+        };
+        li.appendChild(icon); li.appendChild(info); li.appendChild(eb); li.appendChild(db2);
+        mb.appendChild(li);
+      });
+    }
+
+    modal.appendChild(mb);
+    overlay.appendChild(modal);
+    app.appendChild(overlay);
+  }
+}
+
+// ─── FORM FIELD BUILDER ───────────────────────────────────────────────
+function makeField(id, label, placeholder, value, key, isSelect=false) {
+  const ff = el("div","form-field");
+  const fl = el("label","form-label"); fl.textContent = label;
+  let input;
+  if (isSelect) {
+    input = el("select","form-input");
+    ["Notes","Past Questions","Slides","Other"].forEach(t => {
+      const o = document.createElement("option"); o.value = t; o.textContent = t;
+      if (value===t) o.selected = true;
+      input.appendChild(o);
+    });
+    input.onchange = e => { state.form[key] = e.target.value; };
+  } else {
+    input = el("input","form-input");
+    input.placeholder = placeholder; input.value = value;
+    input.oninput = e => { state.form[key] = e.target.value; };
+  }
+  ff.appendChild(fl); ff.appendChild(input);
+  return ff;
+}
+
+// ─── COURSE TITLE MAP ─────────────────────────────────────────────────
+function getCourseTitle(code) {
+  const map = {
+    "VMPA 402":"Pathology of Infectious Diseases / Chemotherapy",
+    "VMPA 406":"Clinical Pathology",
+    "VMPA 408":"Laboratory Animal Diseases",
+    "VMPT 402":"Toxicology",
+    "VMPT 404":"Veterinary Toxicology",
+    "VMMB 404":"Virology",
+    "VMSR 402":"Principles of Surgery",
+  };
+  return map[code] || "";
+}
+
+// ─── AUTH ─────────────────────────────────────────────────────────────
+function tryAuth() {
+  if (state.pwInput === ADMIN_PASSWORD) { state.authed = true; state.pwError = false; }
+  else { state.pwError = true; }
+  render();
+}
+
+// ─── SAVE ─────────────────────────────────────────────────────────────
+async function handleSave() {
+  if (!state.form.course || !state.form.title || !state.form.url) {
+    state.saveError = "Please fill in Course Code, Title, and Google Drive Link.";
+    render(); return;
+  }
+  state.saving = true; state.saveError = ""; state.saved = false;
+  render();
+  try {
+    await saveToCloud(state.form, state.editId);
+    state.materials = await loadFromCloud();
+    state.editId = null;
+    state.form = { course:"", title:"", type:"Notes", url:"", addedBy:"Academic Committee", description:"" };
+    state.saved = true;
+    state.saving = false;
+    render();
+    setTimeout(() => { state.saved = false; render(); }, 2500);
+  } catch(e) {
+    state.saving = false;
+    state.saveError = "Save failed. Check your internet connection and try again.";
+    render();
+  }
+}
+
+// ─── BOOT ─────────────────────────────────────────────────────────────
+(async () => {
+  state.materials = await loadFromCloud();
+  state.loading = false;
+  render();
+})();
+</script>
+</body>
+</html>
